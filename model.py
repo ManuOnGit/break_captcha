@@ -1,105 +1,90 @@
-import os
-from collections import Counter
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
 from torch.utils.data.sampler import SubsetRandomSampler
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
 
-import numpy as np
-
 from data_loader import Dataset
-from preprocessing import preprocessing_full
+from preprocessing import preprocessing_full, preprocessing_basic
+from tools import *
 
-error_track_test = Counter()
-error_track_train = Counter()
-dataset = Dataset(preprocessing_full)
-shuffle_dataset = True
-random_seed = 42
+load_model = True
 batch_size = 128
-dataset_size = len(dataset)
-indices = list(range(dataset_size))
-split = int(np.floor(0.2 * dataset_size))
+lr_Adam = 0.00001
+tresh = Variable(torch.Tensor([0.5]))
+max_epoch = 10
+name = 'ConvNet_with_basic_prepro'
+# name = 'ConvNet_with_full_prepro'
+preprocessing_func = preprocessing_basic if 'basic' in name else preprocessing_full
 
-if shuffle_dataset:
-    np.random.seed(random_seed)
-    np.random.shuffle(indices)
+class ConvNet(nn.Module):
+    def __init__(self, name):
+        super(ConvNet, self).__init__()
+        self.name = name
+        self.relu = F.relu
+        self.sig = nn.Sigmoid()
+        self.pool2d2 = F.max_pool2d
+        self.conv1 = nn.Conv2d(1, 32, 5, 1)
+        self.conv2 = nn.Conv2d(32, 64, 5, 1)
+        self.fc1 = nn.Linear(18 * 18 * 64, 500)
+        self.fc2 = nn.Linear(500, 1)
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.pool2d2(x, 2, 2)
+        x = self.conv2(x)
+        x = self.relu(x)
+        x = self.pool2d2(x, 2, 2)
+        x = x.view(-1, 18 * 18 * 64)
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        x = self.sig(x)
+        return x
 
-train_indices, test_indices = indices[split:], indices[:split]
+model = ConvNet(name)
 
-train_sampler = SubsetRandomSampler(train_indices)
-test_sampler = SubsetRandomSampler(test_indices)
+dataset_train = Dataset(transfP = preprocessing_func, train = True)
+dataset_test = Dataset(transfP = preprocessing_func, train = False)
 
-train_loader = DataLoader(dataset, batch_size = batch_size, sampler = train_sampler)
-test_loader = DataLoader(dataset, batch_size = batch_size, sampler = test_sampler)
+train_loader = DataLoader(dataset_train, batch_size = batch_size, shuffle = True)
+test_loader = DataLoader(dataset_test,  batch_size = batch_size, shuffle = True)
 
 print('==>>> total trainning batch number: {}'.format(len(train_loader)))
 print('==>>> total testing batch number: {}'.format(len(test_loader)))
 
-class ConvNet(torch.nn.Module):
-    def __init__(self):
-        super(ConvNet, self).__init__()
-        self.conv1 = torch.nn.Conv2d(1, 32, 5, 1)
-        self.conv2 = torch.nn.Conv2d(32, 64, 5, 1)
-        self.fc1 = torch.nn.Linear(18 * 18 * 64, 500)
-        self.fc2 = torch.nn.Linear(500, 1)
-        self.out_act = torch.nn.Sigmoid()
-    def forward(self, x):
-        x = self.conv1(x)
-        x = torch.nn.functional.relu(x)
-        x = torch.nn.functional.max_pool2d(x, 2, 2)
-        x = self.conv2(x)
-        x = torch.nn.functional.relu(x)
-        x = torch.nn.functional.max_pool2d(x, 2, 2)
-        x = x.view(-1, 18 * 18 * 64)
-        x = self.fc1(x)
-        x = torch.nn.functional.relu(x)
-        x = self.fc2(x)
-        x = self.out_act(x)
-        return x
-    def name(self):
-        return "ConvNet"
+if load_model:
+    model.load_state_dict(torch.load(MODELS + '/' + model.name))
+else:
+    # train model
+    optimizer = optim.Adam(model.parameters(), lr = lr_Adam)
+    criterion = nn.BCELoss()
+    evaluator = Evaluator(dataset_train, MODELS, 'training')
+    for epoch in range(max_epoch):
+        evaluator.new_epoch()
+        for batch_id, (images, targets, indexes) in enumerate(train_loader):
+            optimizer.zero_grad()
+            predictions = model(images)
+            loss = criterion(predictions, targets)
+            loss.backward()
+            optimizer.step()
+            predictions = (predictions > tresh).float() * 1
+            evaluator.update_all(targets = targets, predictions = predictions, indexes = indexes, loss = loss)
+            if batch_id % 100 == 0 or batch_id == len(train_loader) - 1:
+                print(evaluator)
+    # save model
+    torch.save(model.state_dict(), MODELS + '/' + model.name)
 
-model = ConvNet()
+# test model
+evaluator = Evaluator(dataset_test, MODELS, 'testing')
+evaluator.new_epoch()
+for batch_id, (images, targets, indexes) in enumerate(test_loader):
+    predictions = model(images)
+    predictions = (predictions > tresh).float() * 1
+    evaluator.update_all(targets = targets, predictions = predictions, indexes = indexes)
+    if batch_id % 100 == 0 or batch_id == len(test_loader) - 1:
+        print(evaluator)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=0.00001)
-
-criterion = torch.nn.BCELoss()
-
-tresh = Variable(torch.Tensor([0.5]))
-
-for epoch in range(10):
-    # trainning
-    ave_loss = 0
-    for batch_idx, (x, target, indexes) in enumerate(train_loader):
-        optimizer.zero_grad()
-        x, target = Variable(x), Variable(target)
-        out = model(x)
-        loss = criterion(out, target)
-        ave_loss = ave_loss * 0.9 + loss.data[0] * 0.1
-        loss.backward()
-        optimizer.step()
-        out = (out > tresh).float() * 1
-        if (out == target).sum() != len(target):
-            error_track_train += Counter(list(indexes[((out == target) == 0).nonzero()[:,0]].flatten().numpy()))
-        if (batch_idx + 1) % 100 == 0 or (batch_idx + 1) == len(train_loader):
-            print('==>>> epoch: {}, batch index: {}, train loss: {:.6f}, acc: {:.3f}'.format(
-                epoch, batch_idx + 1, ave_loss, float((out == target).sum()) / len(target)))
-
-# testing
-correct_cnt, ave_loss = 0, 0
-total_cnt = 0
-for batch_idx, (x, target, indexes) in enumerate(test_loader):
-    x, target = Variable(x), Variable(target)
-    out = model(x)
-    loss = criterion(out, target)
-    total_cnt += x.data.size()[0]
-    out = (out > tresh).float() * 1
-    correct_cnt += (out == target).sum()
-    ave_loss = ave_loss * 0.9 + loss.data[0] * 0.1
-    if (out == target).sum() != len(target):
-        error_track_test += Counter(list(indexes[((out == target) == 0).nonzero()[:,0]].flatten().numpy()))
-    if(batch_idx + 1) % 100 == 0 or (batch_idx + 1) == len(test_loader):
-        print('==>>> epoch: {}, batch index: {}, test loss: {:.6f}, acc: {:.3f}'.format(
-            epoch, batch_idx + 1, ave_loss, float(correct_cnt) * 1.0 / total_cnt))
-
-torch.save(model.state_dict(), model.name())
+print(evaluator)

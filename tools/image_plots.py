@@ -5,6 +5,23 @@ from tools import *
 
 SIZE = 5
 
+def displayOne(path, transfP = None):
+    img = cv2.imread(path)
+    img_type = os.path.basename(os.path.dirname(path))
+    if transfP:
+        plt.subplot(1, 2, 1)
+        plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        plt.title('Original picture')
+        plt.xticks([])
+        plt.yticks([])
+        plt.subplot(1, 2, 2)
+        plt.imshow(transfP(img), 'gray')
+        plt.title('Preprocessed picture')
+    else:
+        plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    plt.suptitle(img_type)
+    plt.show()
+
 def plotParamVar(img_1, img_2, title, transf, par_1, par_2, pars_fixed, saving_path=None, tresh=False):
     """ plot variations of transf function given two parameters ranges 
     """
@@ -63,7 +80,10 @@ def plotManyExamples(title, transfP, saving_path=None, tresh=False):
             images.append(transfP(src = img))
     for i in range(len(images)):
         plt.subplot(n, m, i + 1);
-        plt.imshow(images[i], 'gray');
+        if i%2:
+            plt.imshow(images[i], 'gray');
+        else:
+            plt.imshow(cv2.cvtColor(images[i], cv2.COLOR_BGR2RGB));
         plt.xticks([]);
         plt.yticks([]);
     plt.suptitle(title, size = 10)

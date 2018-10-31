@@ -5,6 +5,7 @@ __pycache__/
 
 # specific folder
 /dataset/
+/medium/
 
 # C extensions
 *.so
